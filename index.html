@@ -34,30 +34,28 @@
     <p>This is a static hosted demo for checking site visits and traffic.</p>
   </footer>
 
-  <!-- WatchTower configuration must be defined before loading the SDK. -->
-  <script>
-    const deployVersion =
-      document.getElementById("version-select")?.value || "v1.2.0-beta";
+<!-- WatchTower configuration must be defined before loading the SDK. -->
+<script>
+  const deployVersion =
+    document.getElementById("version-select")?.value || "v1.2.0-beta";
 
-    window.WATCHTOWER_API_URL =
-      "https://disallow-headrest-dollar.ngrok-free.dev/#home";
+  window.WATCHTOWER_API_URL =
+    "https://disallow-headrest-dollar.ngrok-free.dev/api/events";
 
-    window.WATCHTOWER_CONFIG = {
-      endpoint: window.WATCHTOWER_API_URL,
-      appName: "shopdemo-hosted",
-      deployVersion: deployVersion
-    };
-  </script>
+  window.WATCHTOWER_CONFIG = {
+    endpoint: window.WATCHTOWER_API_URL,
+    appName: "shopdemo-hosted",
+    deployVersion: deployVersion
+  };
+</script>
 
-  <!-- WatchTower browser SDK. -->
-  <script src="./sdk/watchtower.js"></script>
+<!-- WatchTower browser SDK. -->
+<script src="./sdk/watchtower.js"></script>
 
-  <!-- Initialize WatchTower before the app script so app.js can use it. -->
-  <script>
-    window.watchtower = new WatchTower(window.WATCHTOWER_CONFIG);
-  </script>
+<!-- Initialize WatchTower before the app script so app.js can use it. -->
+<script>
+  window.watchtower = new WatchTower(window.WATCHTOWER_CONFIG);
+</script>
 
-  <!-- Main ShopDemo app logic. -->
-  <script src="app.js"></script>
-</body>
-</html>
+<!-- Main ShopDemo app logic. -->
+<script src="app.js"></script>
