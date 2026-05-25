@@ -1,22 +1,53 @@
 /**
- * WatchTower browser SDK.
+ * WatchTower browser SDK for the external demo app.
  *
- * Capture errors, performance metrics, and user interactions from a
- * client page and forward them to the WatchTower server in small
- * batches. Designed to run in any modern browser without a build step.
+ * This script runs inside the demo app and captures browser telemetry such as:
+ * page views, JavaScript errors, unhandled promise rejections, page-load
+ * performance metrics, and user interactions.
  *
- * @module ./sdk/watchtower
+ * Captured events are sent to the WatchTower backend in small batches.
+ * The backend URL should be configured in `index.html` before this script loads:
+ *
+ * window.WATCHTOWER_API_URL = "https://YOUR-WATCHTOWER-BACKEND-URL/api/events";
+ *
+ * If `window.WATCHTOWER_API_URL` is not provided, the script falls back to
+ * `/api/events`, which is useful only when the demo app and WatchTower backend
+ * are served from the same origin during local testing.
+ *
+ * Designed to run in any modern browser without a build step.
+ *
+ * @module sdk/watchtower
  */
 (function (global) {
   "use strict";
 
-  var DEFAULT_ENDPOINT = "https://watchtower-server-t7g7.onrender.com/api/events";
+  /**
+   * Default WatchTower event endpoint.
+   *
+   * For the external GitHub Pages demo app, `index.html` should define:
+   *
+   * window.WATCHTOWER_API_URL = "https://YOUR-WATCHTOWER-BACKEND-URL/api/events";
+   *
+   * The `/api/events` fallback is only correct for same-origin local testing,
+   * where the demo app and WatchTower backend are served by the same server.
+   */
+  var DEFAULT_ENDPOINT =
+    global.WATCHTOWER_API_URL ||
+    "/api/events";
+
   var FLUSH_INTERVAL = 2000;
   var SESSION_KEY = "__wt_sid";
-  var DEFAULT_CLICK_SELECTOR = ".btn, .card, .nav-links a, [data-wt-click]";
   var inMemorySessionId = null;
   var fallbackSessionCounter = 0;
 
+  /**
+   * Generate a short pseudo-random identifier for browser sessions.
+   *
+   * Uses the browser crypto API when available and falls back to a
+   * deterministic timestamp-based identifier in restricted environments.
+   *
+   * @returns {string} Session identifier such as `"a1b2c3d4-e5f6-4789"`.
+   */
   function generateId() {
     var cryptoObj = global.crypto || global.msCrypto;
     var bytes = new Uint8Array(12);
@@ -31,26 +62,55 @@
     }
 
     fallbackSessionCounter += 1;
-    return ["fallback", Date.now().toString(16), fallbackSessionCounter.toString(16)].join("-");
+    return [
+      "fallback",
+      Date.now().toString(16),
+      fallbackSessionCounter.toString(16),
+    ].join("-");
   }
 
+  /**
+   * Safely read a session value from browser storage.
+   *
+   * Some browser contexts disable storage access and throw when reading
+   * `sessionStorage`, so this helper falls back to `null`.
+   *
+   * @param {string} key - Storage key to read.
+   * @returns {?string} Stored value when available.
+   */
   function readSessionValue(key) {
     try {
-      if (!global.sessionStorage) return null;
+      if (!global.sessionStorage) {
+        return null;
+      }
       return global.sessionStorage.getItem(key);
-    } catch (_error) {
+    } catch (error) {
       return null;
     }
   }
 
+  /**
+   * Safely persist a session value in browser storage.
+   *
+   * @param {string} key - Storage key to write.
+   * @param {string} value - Value to store.
+   * @returns {void}
+   */
   function writeSessionValue(key, value) {
     try {
-      if (global.sessionStorage) global.sessionStorage.setItem(key, value);
-    } catch (_error) {
-      // Ignore storage failures.
+      if (global.sessionStorage) {
+        global.sessionStorage.setItem(key, value);
+      }
+    } catch (error) {
+      // Ignore storage failures and keep the in-memory fallback instead.
     }
   }
 
+  /**
+   * Return a stable session identifier for the current tab.
+   *
+   * @returns {string} Current tab session id.
+   */
   function getSessionId() {
     var sessionId = readSessionValue(SESSION_KEY) || inMemorySessionId;
     if (!sessionId) {
@@ -61,51 +121,64 @@
     return sessionId;
   }
 
-  function getText(value) {
-    return (value || "").replace(/\s+/g, " ").trim();
-  }
-
-  function elementSelectorHint(element) {
-    if (!element || !element.tagName) return "unknown";
-    var base = element.tagName.toLowerCase();
-    if (element.id) return base + "#" + element.id;
-    if (element.className && typeof element.className === "string") {
-      var firstClass = element.className.split(/\s+/).filter(Boolean)[0];
-      if (firstClass) return base + "." + firstClass;
-    }
-    return base;
-  }
-
+  /**
+   * Create a new WatchTower SDK instance.
+   *
+   * The external demo app should create one instance from `index.html` or
+   * `app.js` after this file loads:
+   *
+   * window.watchtower = new WatchTower({
+   *   endpoint: window.WATCHTOWER_API_URL,
+   *   appName: "external-demo-app",
+   *   deployVersion: "external-demo-v1"
+   * });
+   *
+   * @class
+   * @param {Object} [config] - Optional SDK configuration.
+   * @param {string} [config.endpoint] - Events API endpoint.
+   * @param {string} [config.deployVersion] - Deploy version label.
+   * @param {string} [config.appName] - Application name label.
+   * @param {string} [config.userId] - Initial user identifier.
+   */
   function WatchTower(config) {
     config = config || {};
     this.endpoint = config.endpoint || DEFAULT_ENDPOINT;
     this.deployVersion = config.deployVersion || "unknown";
     this.appName = config.appName || location.hostname;
-    this.userId = config.userId || null;
     this.sessionId = getSessionId();
-    this.clickSelector = config.clickSelector || DEFAULT_CLICK_SELECTOR;
+    this.userId = config.userId || null;
     this._queue = [];
     this._flushing = false;
-    this._wrappedFunctions = {};
-    this._bridgeObserver = null;
 
     this._bindErrors();
     this._bindPerformance();
-    this._bindAutoClicks();
-    this._bindAppBridge();
-    this._bindDomHeuristics();
-    this._bindFunctionHeuristics();
     this._startFlush();
+    this._emitInitialPageView();
   }
 
-  WatchTower.prototype.setUser = function (userId) {
-    this.userId = userId || null;
+  /**
+   * Emit a `page_view` event the first time the SDK initializes for the
+   * current document. The event is enqueued so it joins the next flush
+   * cycle along with any other captured signals.
+   *
+   * @private
+   * @returns {void}
+   */
+  WatchTower.prototype._emitInitialPageView = function () {
+    this._enqueue("page_view", {
+      title: typeof document !== "undefined" ? document.title : "",
+      referrer: typeof document !== "undefined" ? document.referrer : "",
+    });
   };
 
-  WatchTower.prototype.setDeployVersion = function (deployVersion) {
-    this.deployVersion = deployVersion || "unknown";
-  };
-
+  /**
+   * Queue a new event for the next flush cycle.
+   *
+   * @private
+   * @param {string} type - Event type name.
+   * @param {Object} data - Event payload.
+   * @returns {void}
+   */
   WatchTower.prototype._enqueue = function (type, data) {
     this._queue.push({
       type: type,
@@ -116,50 +189,24 @@
       appName: this.appName,
       url: location.href,
       route: location.pathname,
-      data: data || {},
+      data: data,
     });
   };
 
-  WatchTower.prototype.trackClick = function (target, text) {
-    this._enqueue("click", {
-      target: target || "",
-      text: (text || "").substring(0, 100),
-    });
-  };
-
-  WatchTower.prototype.trackEvent = function (name, payload) {
-    this._enqueue("custom", {
-      name: name,
-      payload: payload || {},
-    });
-  };
-
-  WatchTower.prototype.trackError = function (errorLike) {
-    var message = "Unknown error";
-    var stack = "";
-
-    if (errorLike && typeof errorLike === "object") {
-      message = errorLike.message || String(errorLike);
-      stack = errorLike.stack || "";
-    } else if (errorLike != null) {
-      message = String(errorLike);
-    }
-
-    this._enqueue("error", {
-      message: message,
-      source: "manual",
-      line: 0,
-      col: 0,
-      stack: stack,
-    });
-  };
-
+  /**
+   * Send a batch of queued events to the backend.
+   *
+   * Failed batches are re-queued for a later retry.
+   *
+   * @private
+   * @returns {void}
+   */
   WatchTower.prototype._flush = function () {
     if (this._flushing || this._queue.length === 0) return;
 
     this._flushing = true;
     var batch = this._queue.splice(0, 50);
-    var self = this;
+    var sdkInstance = this;
 
     fetch(this.endpoint, {
       method: "POST",
@@ -168,30 +215,42 @@
       keepalive: true,
     })
       .catch(function () {
-        self._queue = batch.concat(self._queue);
+        sdkInstance._queue = batch.concat(sdkInstance._queue);
       })
       .finally(function () {
-        self._flushing = false;
+        sdkInstance._flushing = false;
       });
   };
 
+  /**
+   * Start the periodic background flush cycle.
+   *
+   * @private
+   * @returns {void}
+   */
   WatchTower.prototype._startFlush = function () {
-    var self = this;
+    var sdkInstance = this;
 
     setInterval(function () {
-      self._flush();
+      sdkInstance._flush();
     }, FLUSH_INTERVAL);
 
     document.addEventListener("visibilitychange", function () {
-      if (document.visibilityState === "hidden") self._flush();
+      if (document.visibilityState === "hidden") sdkInstance._flush();
     });
   };
 
+  /**
+   * Bind browser error listeners so uncaught failures are reported.
+   *
+   * @private
+   * @returns {void}
+   */
   WatchTower.prototype._bindErrors = function () {
-    var self = this;
+    var sdkInstance = this;
 
-    global.addEventListener("error", function (event) {
-      self._enqueue("error", {
+    window.addEventListener("error", function (event) {
+      sdkInstance._enqueue("error", {
         message: event.message || "Unknown error",
         source: event.filename || "",
         line: event.lineno || 0,
@@ -200,203 +259,181 @@
       });
     });
 
-    global.addEventListener("unhandledrejection", function (event) {
-      var reason = event.reason || {};
-      self._enqueue("error", {
-        message: reason.message || String(reason),
+    window.addEventListener("unhandledrejection", function (event) {
+      var rejectionReason = event.reason || {};
+      sdkInstance._enqueue("error", {
+        message: rejectionReason.message || String(rejectionReason),
         source: "unhandledrejection",
         line: 0,
         col: 0,
-        stack: reason.stack || "",
+        stack: rejectionReason.stack || "",
       });
     });
   };
 
+  /**
+   * Bind performance capture for page-load timing metrics.
+   *
+   * @private
+   * @returns {void}
+   */
   WatchTower.prototype._bindPerformance = function () {
-    var self = this;
+    var sdkInstance = this;
 
-    global.addEventListener("load", function () {
+    window.addEventListener("load", function () {
       setTimeout(function () {
-        var nav = performance.getEntriesByType("navigation")[0];
-        if (!nav) return;
+        var navigationEntry = performance.getEntriesByType("navigation")[0];
+        if (!navigationEntry) return;
 
-        self._enqueue("pageload", {
-          duration: Math.round(nav.duration),
-          ttfb: Math.round(nav.responseStart - nav.requestStart),
-          domContentLoaded: Math.round(nav.domContentLoadedEventEnd - nav.startTime),
-          loadComplete: Math.round(nav.loadEventEnd - nav.startTime),
-          transferSize: nav.transferSize || 0,
+        sdkInstance._enqueue("pageload", {
+          duration: Math.round(navigationEntry.duration),
+          ttfb: Math.round(navigationEntry.responseStart - navigationEntry.requestStart),
+          domContentLoaded: Math.round(navigationEntry.domContentLoadedEventEnd - navigationEntry.startTime),
+          loadComplete: Math.round(navigationEntry.loadEventEnd - navigationEntry.startTime),
+          transferSize: navigationEntry.transferSize || 0,
         });
       }, 100);
     });
   };
 
-  WatchTower.prototype._bindAutoClicks = function () {
-    var self = this;
+  /**
+   * Associate future events with a user identifier.
+   *
+   * @param {string} userId - Application user id.
+   * @returns {void}
+   */
+  WatchTower.prototype.setUser = function (userId) {
+    this.userId = userId;
+  };
 
-    document.addEventListener("click", function (event) {
-      var matched = event.target && event.target.closest ? event.target.closest(self.clickSelector) : null;
-      if (!matched) return;
-
-      var explicitTarget = matched.getAttribute("data-wt-target") || "";
-      var target = explicitTarget || elementSelectorHint(matched);
-      var text = matched.getAttribute("data-wt-text") || getText(matched.textContent || matched.innerText || "");
-      self.trackClick(target, text.substring(0, 100));
+  /**
+   * Track a click interaction.
+   *
+   * @param {string} target - Short element/selector description.
+   * @param {string} text - Visible element text.
+   * @returns {void}
+   */
+  WatchTower.prototype.trackClick = function (target, text) {
+    this._enqueue("click", {
+      target: target || "",
+      text: (text || "").substring(0, 100),
     });
   };
 
-  WatchTower.prototype._bindAppBridge = function () {
-    var self = this;
+  /**
+   * Track a login event and remember the current user id.
+   *
+   * @param {string} userId - User identifier.
+   * @param {string} method - Authentication method label.
+   * @returns {void}
+   */
+  WatchTower.prototype.trackLogin = function (userId, method) {
+    this.userId = userId;
+    this._enqueue("login", {
+      userId: userId,
+      method: method || "unknown",
+    });
+  };
 
-    function bindEventAliases(eventNames, handler) {
-      eventNames.forEach(function (eventName) {
-        global.addEventListener(eventName, handler);
-      });
+  /**
+   * Track an application-defined custom event.
+   *
+   * @param {string} name - Event name.
+   * @param {Object} payload - Event payload.
+   * @returns {void}
+   */
+  WatchTower.prototype.trackEvent = function (name, payload) {
+    this._enqueue("custom", {
+      name: name,
+      payload: payload || {},
+    });
+  };
+
+  /**
+   * Track a manually caught error.
+   *
+   * @param {Error|Object|string} error - Error-like value.
+   * @returns {void}
+   */
+  WatchTower.prototype.trackError = function (error) {
+    this._enqueue("error", {
+      message: error.message || String(error),
+      source: "manual",
+      line: 0,
+      col: 0,
+      stack: error.stack || "",
+    });
+  };
+
+  /**
+   * Lightweight reusable helper that POSTs a single event to WatchTower.
+   *
+   * This helper can be called from the external demo app's `app.js` for
+   * manual verification events, test buttons, or one-off custom telemetry.
+   *
+   * By default, it sends to the configured WatchTower backend endpoint:
+   *
+   * window.WATCHTOWER_API_URL
+   *
+   * If no custom backend URL is configured, it falls back to `/api/events`
+   * for same-origin local testing. An endpoint can also be passed directly
+   * as the second argument.
+   *
+   * The helper sets `Content-Type: application/json`, sends the event with
+   * `keepalive: true` so it can complete during page unload, and silently
+   * handles network failures so the demo page never breaks.
+   *
+   * The function returns a Promise that resolves with the parsed JSON
+   * response on success and `null` on failure.
+   *
+   * @param {Object} event - Event payload (camelCase or snake_case fields).
+   * @param {string} [endpoint] - Optional endpoint override.
+   * @returns {Promise<Object|null>} Server response on success, `null` on failure.
+   */
+  function sendWatchTowerEvent(event, endpoint) {
+    const url = endpoint || DEFAULT_ENDPOINT;
+    const payload = event && typeof event === "object" ? event : {};
+
+    if (!payload.timestamp) {
+      payload.timestamp = new Date().toISOString();
+    }
+    if (!payload.sessionId && !payload.session_id) {
+      payload.sessionId = getSessionId();
     }
 
-    bindEventAliases(["app:user", "watchtower:user"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      self.setUser(detail.userId || null);
-    });
-
-    bindEventAliases(["app:version", "watchtower:version"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      self.setDeployVersion(detail.deployVersion || detail.version || "unknown");
-      self.trackEvent("version-switch", { version: self.deployVersion });
-    });
-
-    bindEventAliases(["app:event", "watchtower:event"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      var eventName = detail.name || "app-event";
-      self.trackEvent(eventName, detail.payload || {});
-    });
-
-    bindEventAliases(["app:feedback", "watchtower:feedback"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      self._enqueue("feedback", {
-        rating: Number(detail.rating) || 0,
-        message: detail.message || "",
-        category: detail.category || "general",
-      });
-    });
-
-    bindEventAliases(["app:pageload", "watchtower:pageload"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      self._enqueue("pageload", {
-        duration: Number(detail.duration) || 0,
-        ttfb: Number(detail.ttfb) || 0,
-        domContentLoaded: Number(detail.domContentLoaded) || 0,
-        loadComplete: Number(detail.loadComplete) || 0,
-        transferSize: Number(detail.transferSize) || 0,
-      });
-    });
-
-    bindEventAliases(["app:error", "watchtower:error"], function (event) {
-      var detail = event && event.detail ? event.detail : {};
-      self.trackError(detail.error || detail.message || "Manual app error");
-    });
-  };
-
-  WatchTower.prototype._bindDomHeuristics = function () {
-    var self = this;
-    var versionSelect = document.getElementById("version-select");
-    if (versionSelect && !versionSelect.__wtBound) {
-      versionSelect.__wtBound = true;
-      self.setDeployVersion(versionSelect.value || "unknown");
-      versionSelect.addEventListener("change", function () {
-        self.setDeployVersion(versionSelect.value || "unknown");
-        self.trackEvent("version-switch", { version: self.deployVersion, source: "dom-heuristic" });
-      });
-    }
-  };
-
-  WatchTower.prototype._bindFunctionHeuristics = function () {
-    var self = this;
-
-    function safeWrap(functionName, afterCall) {
-      if (self._wrappedFunctions[functionName]) return;
-      var original = global[functionName];
-      if (typeof original !== "function") return;
-
-      global[functionName] = function () {
-        var args = Array.prototype.slice.call(arguments);
-        var result = original.apply(this, args);
-        try {
-          afterCall(args, result);
-        } catch (_error) {
-          // Ignore heuristic capture failures.
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return null;
         }
-        return result;
-      };
-      self._wrappedFunctions[functionName] = true;
-    }
-
-    function bindKnownFunctions() {
-      safeWrap("__triggerCustomEvent", function () {
-        self.trackEvent("custom-demo-action", { source: "function-hook" });
-      });
-
-      safeWrap("__triggerSlowLoad", function () {
-        self.trackEvent("slow-load-simulated", { source: "function-hook" });
-      });
-
-      safeWrap("__addToCart", function (args) {
-        self.trackEvent("add-to-cart", {
-          productId: Number(args[0]) || null,
-          source: "function-hook",
+        return response.json().catch(function () {
+          return null;
         });
+      })
+      .catch(function (error) {
+        if (typeof console !== "undefined" && console && typeof console.warn === "function") {
+          console.warn("[WatchTower] sendWatchTowerEvent failed:", error && error.message ? error.message : error);
+        }
+        return null;
       });
-
-      safeWrap("__removeFromCart", function (args) {
-        self.trackEvent("remove-from-cart", {
-          cartIndex: Number(args[0]) || 0,
-          source: "function-hook",
-        });
-      });
-
-      safeWrap("__checkout", function () {
-        self.trackEvent("checkout-success", { source: "function-hook" });
-      });
-
-      safeWrap("__checkoutError", function () {
-        self.trackEvent("checkout-error-flow", { source: "function-hook" });
-      });
-
-      safeWrap("__login", function () {
-        var userBadge = document.getElementById("user-badge");
-        var username = userBadge ? getText(userBadge.textContent || "") : "";
-        var isVisible = userBadge && !userBadge.classList.contains("hidden");
-        if (!isVisible || !username) return;
-
-        self.setUser(username);
-        self._enqueue("login", {
-          userId: username,
-          source: "function-hook",
-        });
-      });
-
-      safeWrap("__logout", function () {
-        self.setUser(null);
-        self.trackEvent("logout", { source: "function-hook" });
-      });
-    }
-
-    bindKnownFunctions();
-    if (this._bridgeObserver) return;
-
-    var observer = new MutationObserver(function () {
-      bindKnownFunctions();
-    });
-    observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
-    this._bridgeObserver = observer;
-  };
-
-  function autoInitialize() {
-    var config = global.WATCHTOWER_CONFIG || {};
-    var sdkInstance = new WatchTower(config);
-    global.__watchTowerInstance = sdkInstance;
   }
 
+  /**
+   * Expose the SDK to the demo app.
+   *
+   * `app.js` can create an SDK instance with:
+   *
+   * window.watchtower = new WatchTower({ ... });
+   *
+   * `app.js` can also send manual test events with:
+   *
+   * window.sendWatchTowerEvent({ ... });
+   */
   global.WatchTower = WatchTower;
-  autoInitialize();
+  global.sendWatchTowerEvent = sendWatchTowerEvent;
 })(window);
