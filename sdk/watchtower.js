@@ -10,7 +10,9 @@
 (function (global) {
   "use strict";
 
-  let DEFAULT_ENDPOINT = "/api/events";
+  let DEFAULT_ENDPOINT =
+    global.WATCHTOWER_API_URL ||
+    "/api/events";
   let FLUSH_INTERVAL = 2000;
   let SESSION_KEY = "__wt_sid";
   let SDK_VERSION = "wt-js-0.3.0";
