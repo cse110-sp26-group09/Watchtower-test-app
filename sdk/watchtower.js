@@ -10,9 +10,7 @@
 (function (global) {
   "use strict";
 
-  let DEFAULT_ENDPOINT =
-    global.WATCHTOWER_API_URL ||
-    "/api/events";
+  let DEFAULT_ENDPOINT = "/api/events";
   let FLUSH_INTERVAL = 2000;
   let SESSION_KEY = "__wt_sid";
   let SDK_VERSION = "wt-js-0.3.0";
@@ -104,25 +102,6 @@
     return "production";
   }
 
-  function getClerkPrimaryEmail() {
-    let clerk = global.Clerk;
-    let user = clerk && clerk.user;
-    console.log("Clerk user object:", user);
-    console.log("Clerk primary email:", user && user.primaryEmailAddress && user.primaryEmailAddress.emailAddress);
-
-    if (!user) return "";
-
-    if (user.primaryEmailAddress && user.primaryEmailAddress.emailAddress) {
-      return user.primaryEmailAddress.emailAddress;
-    }
-
-    if (Array.isArray(user.emailAddresses) && user.emailAddresses.length > 0) {
-      return user.emailAddresses[0].emailAddress || "";
-    }
-
-    return "";
-  }
-
   /**
    * Return a stable session identifier for the current tab.
    *
@@ -147,7 +126,6 @@
    * @param {string} [config.deployVersion] - Deploy version label.
    * @param {string} [config.appName] - Application name label.
    * @param {string} [config.userId] - Initial user identifier.
-   * @param {string} [config.alertRecipient] - Email address for alert notifications.
    */
   function WatchTower(config) {
     config = config || {};
@@ -160,7 +138,6 @@
     this.maxQueueSize = typeof config.maxQueueSize === "number" ? config.maxQueueSize : MAX_QUEUE_SIZE;
     this.sessionId = getSessionId();
     this.userId = config.userId || null;
-    this.alertRecipient = config.alertRecipient || null;
     this._queue = [];
     this._flushing = false;
     this._beaconSent = false;
@@ -252,10 +229,7 @@
     fetch(this.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        alertRecipient: this.getAlertRecipient(),
-        events: batch,
-      }),
+      body: JSON.stringify({ events: batch }),
       keepalive: true,
     })
       .then(function () {
@@ -295,10 +269,7 @@
 
     if (navigator.sendBeacon) {
       let batch = this._queue.splice(0);
-      let blob = new Blob([JSON.stringify({
-        alertRecipient: this.getAlertRecipient(),
-        events: batch,
-      })], { type: "application/json" });
+      let blob = new Blob([JSON.stringify({ events: batch })], { type: "application/json" });
       let sent = navigator.sendBeacon(this.beaconEndpoint, blob);
       if (!sent) {
         this._queue = batch.concat(this._queue);
@@ -553,14 +524,6 @@
    */
   WatchTower.prototype.setUser = function (userId) {
     this.userId = userId;
-  };
-
-  WatchTower.prototype.getAlertRecipient = function () {
-    return this.alertRecipient || getClerkPrimaryEmail();
-  };
-
-  WatchTower.prototype.setAlertRecipient = function (email) {
-    this.alertRecipient = email || null;
   };
 
   /**
