@@ -11,7 +11,7 @@
 
   let versionSelect = document.getElementById("version-select");
   let watchTower = new WatchTower({
-    endpoint: "/api/events",
+    endpoint: "https://watchtower-course-project-g8dv.onrender.com/api/events",
     deployVersion: versionSelect.value,
     appName: "shopdemo",
   });
@@ -34,7 +34,15 @@
   });
 
   function trackClick(clickedElement) {
-    let clickedText = clickedElement.textContent || clickedElement.innerText || "";
+    let labelElement = clickedElement.querySelector("h1,h2,h3,h4,h5,h6,[data-watchtower-label],[aria-label]");
+    let clickedText =
+      clickedElement.getAttribute("data-watchtower-label") ||
+      clickedElement.getAttribute("aria-label") ||
+      clickedElement.getAttribute("title") ||
+      (labelElement ? labelElement.textContent : "") ||
+      clickedElement.textContent ||
+      clickedElement.innerText ||
+      "";
     let selectorHint = clickedElement.tagName + (clickedElement.className ? "." + clickedElement.className.split(" ")[0] : "");
     watchTower.trackClick(selectorHint, clickedText.trim().substring(0, 60));
   }

@@ -15,8 +15,28 @@
   let SESSION_KEY = "__wt_sid";
   let SDK_VERSION = "wt-js-0.3.0";
   let MAX_QUEUE_SIZE = 800;
+  let CLICK_BINDING_KEY = "__watchtowerClickBinding";
+  let CLICKABLE_SELECTOR = [
+    "a[href]",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "summary",
+    "[onclick]",
+    "[role='button']",
+    "[role='link']",
+    "[role='menuitem']",
+    "[role='tab']",
+    "[role='checkbox']",
+    "[role='radio']",
+    "[role='switch']",
+    "[tabindex]"
+  ].join(",");
   let inMemorySessionId = null;
   let fallbackSessionCounter = 0;
+  let lastClickSignature = "";
+  let lastClickTimestamp = 0;
 
   /**
    * Generate a short pseudo-random identifier for browser sessions.
@@ -88,6 +108,151 @@
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
   }
 
+  function safeString(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  function normalizeText(value, maxLength) {
+    return safeString(value).replace(/\s+/g, " ").trim().substring(0, maxLength);
+  }
+
+  function getAttributeValue(element, name) {
+    if (!element || typeof element.getAttribute !== "function") return "";
+    return normalizeText(element.getAttribute(name) || "", 120);
+  }
+
+  function getFirstMatchingText(element, selector) {
+    if (!element || typeof element.querySelector !== "function") return "";
+
+    let matchingElement = element.querySelector(selector);
+    if (!matchingElement) return "";
+
+    return normalizeText(
+      getAttributeValue(matchingElement, "data-watchtower-label") ||
+      getAttributeValue(matchingElement, "aria-label") ||
+      matchingElement.innerText ||
+      matchingElement.textContent ||
+      getAttributeValue(matchingElement, "title") ||
+      getAttributeValue(matchingElement, "name") ||
+      getAttributeValue(matchingElement, "value"),
+      100
+    );
+  }
+
+  function getElementText(element) {
+    if (!element) return "";
+    let tagName = safeString(element.tagName).toLowerCase();
+    let inputType = getAttributeValue(element, "type").toLowerCase();
+    let explicitLabel =
+      getAttributeValue(element, "data-watchtower-label") ||
+      getAttributeValue(element, "aria-label") ||
+      getAttributeValue(element, "title") ||
+      getAttributeValue(element, "name");
+
+    if (tagName === "input" && inputType !== "button" && inputType !== "submit" && inputType !== "reset") {
+      return normalizeText(
+        explicitLabel ||
+        getAttributeValue(element, "placeholder"),
+        100
+      );
+    }
+
+    if (explicitLabel) {
+      return normalizeText(explicitLabel, 100);
+    }
+
+    if (element.children && element.children.length > 0) {
+      let conciseChildText = getFirstMatchingText(
+        element,
+        "h1,h2,h3,h4,h5,h6,[data-watchtower-label],[aria-label],button,a,[role='button'],[role='link']"
+      );
+
+      if (conciseChildText) {
+        return conciseChildText;
+      }
+    }
+
+    return normalizeText(
+      element.innerText ||
+      element.textContent ||
+      getAttributeValue(element, "value"),
+      100
+    );
+  }
+
+  function getElementClasses(element) {
+    if (!element || !element.classList) return "";
+    return Array.prototype.slice.call(element.classList)
+      .filter(function (className) { return /^[A-Za-z0-9_-]+$/.test(className); })
+      .slice(0, 3)
+      .join(".");
+  }
+
+  function describeElement(element) {
+    if (!element) return "";
+
+    let tagName = safeString(element.tagName || "element").toUpperCase();
+    let target = tagName;
+    let id = getAttributeValue(element, "id");
+    let classes = getElementClasses(element);
+
+    if (id && /^[A-Za-z][A-Za-z0-9_-]*$/.test(id)) {
+      target += "#" + id;
+    }
+    if (classes) {
+      target += "." + classes;
+    }
+
+    return target.substring(0, 160);
+  }
+
+  function getSafeHref(element) {
+    let href = getAttributeValue(element, "href");
+    if (!href) return "";
+
+    try {
+      let parsedUrl = new URL(href, location.href);
+      return parsedUrl.origin === location.origin ? parsedUrl.pathname : parsedUrl.origin + parsedUrl.pathname;
+    } catch (error) {
+      return href.split("?")[0].split("#")[0].substring(0, 120);
+    }
+  }
+
+  function findClickableElement(startElement) {
+    if (!startElement || startElement.nodeType !== 1) return null;
+    if (typeof startElement.closest !== "function") return null;
+
+    let clickableElement = startElement.closest(CLICKABLE_SELECTOR);
+    if (!clickableElement || clickableElement === document.documentElement || clickableElement === document.body) {
+      return null;
+    }
+
+    if (clickableElement.disabled || getAttributeValue(clickableElement, "aria-disabled") === "true") {
+      return null;
+    }
+
+    return clickableElement;
+  }
+
+  function getClickSignature(target, text) {
+    let targetTag = normalizeText(target, 160).split(/[.#\s]/)[0].toLowerCase();
+    return [
+      targetTag,
+      normalizeText(text, 60).toLowerCase()
+    ].join("|");
+  }
+
+  function shouldDropDuplicateClick(target, text) {
+    let signature = getClickSignature(target, text);
+    let now = Date.now();
+    let isDuplicate = signature && signature === lastClickSignature && now - lastClickTimestamp < 100;
+
+    lastClickSignature = signature;
+    lastClickTimestamp = now;
+
+    return isDuplicate;
+  }
+
   function resolveEnvironment() {
     let host = (global.location && global.location.hostname ? global.location.hostname : "").toLowerCase();
     if (host.indexOf("localhost") !== -1 || host.indexOf("127.0.0.1") !== -1 || host.indexOf("dev") !== -1) {
@@ -126,16 +291,18 @@
    * @param {string} [config.deployVersion] - Deploy version label.
    * @param {string} [config.appName] - Application name label.
    * @param {string} [config.userId] - Initial user identifier.
+   * @param {boolean} [config.autoTrackClicks=true] - Automatically capture UI clicks.
    */
   function WatchTower(config) {
     config = config || {};
     this.endpoint = config.endpoint || DEFAULT_ENDPOINT;
-    this.beaconEndpoint = config.beaconEndpoint || this.endpoint.replace(/[^/]+$/, "beacon");
+    this.beaconEndpoint = config.beaconEndpoint || this.endpoint;
     this.deployVersion = config.deployVersion || "unknown";
     this.appName = config.appName || location.hostname;
     this.environment = config.environment || resolveEnvironment();
     this.sdkVersion = config.sdkVersion || SDK_VERSION;
     this.maxQueueSize = typeof config.maxQueueSize === "number" ? config.maxQueueSize : MAX_QUEUE_SIZE;
+    this.autoTrackClicks = config.autoTrackClicks !== false;
     this.sessionId = getSessionId();
     this.userId = config.userId || null;
     this._queue = [];
@@ -152,6 +319,7 @@
     this._bindWebVitals();
     this._bindErrors();
     this._bindPerformance();
+    this._bindInteractions();
     this._startFlush();
   }
 
@@ -517,6 +685,57 @@
   };
 
   /**
+   * Bind generic UI interaction capture for clickable elements.
+   *
+   * @private
+   * @returns {void}
+   */
+  WatchTower.prototype._bindInteractions = function () {
+    if (this.autoTrackClicks === false || typeof document === "undefined" || typeof document.addEventListener !== "function") {
+      return;
+    }
+
+    global[CLICK_BINDING_KEY] = global[CLICK_BINDING_KEY] || {};
+    global[CLICK_BINDING_KEY].sdkInstance = this;
+
+    if (global[CLICK_BINDING_KEY].bound) {
+      return;
+    }
+
+    global[CLICK_BINDING_KEY].bound = true;
+
+    document.addEventListener("click", function (event) {
+      let binding = global[CLICK_BINDING_KEY];
+      let sdkInstance = binding && binding.sdkInstance;
+      if (!sdkInstance) return;
+
+      let clickedElement = findClickableElement(event.target);
+      if (!clickedElement) return;
+
+      let target = describeElement(clickedElement);
+      let text = getElementText(clickedElement);
+
+      if (!target && !text) return;
+
+      sdkInstance._enqueueClick({
+        target: target,
+        text: text,
+        tagName: safeString(clickedElement.tagName).toLowerCase(),
+        id: getAttributeValue(clickedElement, "id"),
+        classes: getElementClasses(clickedElement).replace(/\./g, " "),
+        role: getAttributeValue(clickedElement, "role"),
+        ariaLabel: getAttributeValue(clickedElement, "aria-label"),
+        name: getAttributeValue(clickedElement, "name"),
+        href: getSafeHref(clickedElement),
+        source: "auto",
+        pointerType: event.pointerType || "",
+        clientX: typeof event.clientX === "number" ? event.clientX : 0,
+        clientY: typeof event.clientY === "number" ? event.clientY : 0,
+      });
+    }, true);
+  };
+
+  /**
    * Associate future events with a user identifier.
    *
    * @param {string} userId - Application user id.
@@ -524,6 +743,20 @@
    */
   WatchTower.prototype.setUser = function (userId) {
     this.userId = userId;
+  };
+
+  WatchTower.prototype._enqueueClick = function (data) {
+    let target = data && data.target ? data.target : "";
+    let text = data && data.text ? data.text : "";
+
+    if (shouldDropDuplicateClick(target, text)) {
+      return;
+    }
+
+    this._enqueue("click", Object.assign({
+      target: target,
+      text: normalizeText(text, 100),
+    }, data || {}), "click");
   };
 
   /**
@@ -534,10 +767,11 @@
    * @returns {void}
    */
   WatchTower.prototype.trackClick = function (target, text) {
-    this._enqueue("click", {
-      target: target || "",
-      text: (text || "").substring(0, 100),
-    }, "click");
+    this._enqueueClick({
+      target: normalizeText(target || "", 160),
+      text: normalizeText(text || "", 100),
+      source: "manual",
+    });
   };
 
   /**
