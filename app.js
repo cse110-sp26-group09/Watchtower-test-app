@@ -1,36 +1,27 @@
 /**
- * Candidate 1 monitored demo application.
+ * Prototype 3 monitored demo application.
  *
- * Mirrors the prototype testing software so the candidate_1 dashboard
+ * Mirrors the prototype testing software so the prototype_3 dashboard
  * has a realistic app to observe.
  *
- * @module candidate_1/demo/app
+ * @module prototype_3/demo/app
  */
 (function () {
   "use strict";
 
-  var versionSelect = document.getElementById("version-select");
-  var watchTower = new WatchTower({
+  let versionSelect = document.getElementById("version-select");
+  let watchTower = new WatchTower({
     endpoint: "/api/events",
     deployVersion: versionSelect.value,
-    appName: "prototype_1_demo",
+    appName: "shopdemo",
   });
 
-  if (typeof console !== "undefined" && console && typeof console.info === "function") {
-    console.info(
-      "[ShopDemo] WatchTower SDK initialized. Endpoint:",
-      "/api/events",
-      "session:",
-      watchTower.sessionId
-    );
-  }
+  let appContainer = document.getElementById("app");
+  let userBadge = document.getElementById("user-badge");
+  let loggedInUser = null;
+  let cartItems = [];
 
-  var appContainer = document.getElementById("app");
-  var userBadge = document.getElementById("user-badge");
-  var loggedInUser = null;
-  var cartItems = [];
-
-  var PRODUCTS = [
+  let PRODUCTS = [
     { id: 1, name: "Synthetic Monitor", price: 79.99, desc: "Automated checks, route coverage" },
     { id: 2, name: "Latency Probe", price: 129.99, desc: "TTFB and page-load diagnostics" },
     { id: 3, name: "Build Overlay", price: 49.99, desc: "Commit and deploy correlation" },
@@ -43,13 +34,13 @@
   });
 
   function trackClick(clickedElement) {
-    var clickedText = clickedElement.textContent || clickedElement.innerText || "";
-    var selectorHint = clickedElement.tagName + (clickedElement.className ? "." + clickedElement.className.split(" ")[0] : "");
+    let clickedText = clickedElement.textContent || clickedElement.innerText || "";
+    let selectorHint = clickedElement.tagName + (clickedElement.className ? "." + clickedElement.className.split(" ")[0] : "");
     watchTower.trackClick(selectorHint, clickedText.trim().substring(0, 60));
   }
 
   document.addEventListener("click", function (event) {
-    var clickableElement = event.target.closest(".btn, .card, .nav-links a");
+    let clickableElement = event.target.closest(".btn, .card, .nav-links a");
     if (clickableElement) trackClick(clickableElement);
   });
 
@@ -84,18 +75,7 @@
   function renderHome() {
     appContainer.innerHTML =
       "<h2>Monitored test surface</h2>" +
-      '<div class="alert info">This app is connected to the Prototype 1 SQLite-backed WatchTower backend. Use it to generate clicks, custom events, latency samples, and failures.</div>' +
-      '<section class="local-test-panel" aria-labelledby="local-test-title">' +
-      '<h3 id="local-test-title">Local SQLite verification</h3>' +
-      '<p>These buttons exercise the full <code>SDK &rarr; /api/events &rarr; SQLite</code> flow. After clicking, run <code>curl http://localhost:3000/api/events</code> or open the dashboard at <code>/</code> to verify storage.</p>' +
-      '<div class="action-group" id="local-test-buttons">' +
-      '<button class="btn" type="button" data-test-action="send-test-event">Send Test Event</button>' +
-      '<button class="btn danger" type="button" data-test-action="trigger-test-error">Trigger Test Error</button>' +
-      '<button class="btn" type="button" data-test-action="send-performance-event">Send Performance Event</button>' +
-      '<button class="btn outline" type="button" data-test-action="send-feedback-event">Send Feedback Event</button>' +
-      "</div>" +
-      "</section>" +
-      "<h3>Realistic monitored interactions</h3>" +
+      '<div class="alert info">This app is connected to Prototype 3. Use it to generate clicks, custom events, latency samples, and failures.</div>' +
       '<div class="action-group">' +
       '<button class="btn" onclick="window.__triggerSlowLoad()">Simulate Slow Load</button>' +
       '<button class="btn danger" onclick="window.__triggerError()">Trigger JS Error</button>' +
@@ -103,84 +83,10 @@
       '<button class="btn outline" onclick="window.__triggerCustomEvent()">Send Custom Event</button>' +
       '<button class="btn outline" onclick="window.__triggerFeedback()">Send Feedback</button>' +
       "</div>";
-
-    bindLocalTestButtons();
   }
-
-  function bindLocalTestButtons() {
-    var localTestContainer = document.getElementById("local-test-buttons");
-    if (!localTestContainer) {
-      return;
-    }
-    localTestContainer.addEventListener("click", function (event) {
-      var trigger = event.target.closest("[data-test-action]");
-      if (!trigger) {
-        return;
-      }
-      switch (trigger.getAttribute("data-test-action")) {
-        case "send-test-event":
-          window.__sendLocalTestEvent();
-          break;
-        case "trigger-test-error":
-          window.__triggerLocalTestError();
-          break;
-        case "send-performance-event":
-          window.__sendLocalPerformanceEvent();
-          break;
-        case "send-feedback-event":
-          window.__sendLocalFeedbackEvent();
-          break;
-        default:
-          break;
-      }
-    });
-  }
-
-  window.__sendLocalTestEvent = function () {
-    var safeMetadata = { test: true, scenario: "manual-verification" };
-    var posted = window.sendWatchTowerEvent({
-      type: "custom",
-      sessionId: watchTower.sessionId,
-      pageUrl: location.pathname,
-      message: "Manual verification test event",
-      severity: "info",
-      appVersion: watchTower.deployVersion,
-      data: { name: "manual-verification", payload: safeMetadata },
-      metadata: safeMetadata,
-    });
-    if (posted && typeof posted.then === "function") {
-      posted.then(function (response) {
-        if (typeof console !== "undefined" && console && typeof console.info === "function") {
-          console.info("[ShopDemo] Test event response:", response);
-        }
-      });
-    }
-  };
-
-  window.__triggerLocalTestError = function () {
-    var localError = new Error("Local SQLite verification - simulated error");
-    watchTower.trackError(localError);
-  };
-
-  window.__sendLocalPerformanceEvent = function () {
-    watchTower._enqueue("performance", {
-      duration: 200 + Math.floor(Math.random() * 1500),
-      ttfb: 80 + Math.floor(Math.random() * 200),
-      domContentLoaded: 150 + Math.floor(Math.random() * 800),
-      loadComplete: 250 + Math.floor(Math.random() * 1200),
-    });
-  };
-
-  window.__sendLocalFeedbackEvent = function () {
-    watchTower._enqueue("feedback", {
-      rating: 5,
-      message: "Local SQLite verification feedback event.",
-      category: "verification",
-    });
-  };
 
   function renderProducts() {
-    var productsHtml = "<h2>Testing tools</h2><div class='card-grid'>";
+    let productsHtml = "<h2>Testing tools</h2><div class='card-grid'>";
     PRODUCTS.forEach(function (product) {
       productsHtml +=
         '<div class="card" onclick="window.__addToCart(' + product.id + ')">' +
@@ -194,12 +100,12 @@
   }
 
   function renderCart() {
-    var cartHtml = "<h2>Cart (" + cartItems.length + " items)</h2>";
+    let cartHtml = "<h2>Cart (" + cartItems.length + " items)</h2>";
 
     if (cartItems.length === 0) {
       cartHtml += '<div class="empty-state">Your cart is empty. Add testing tools to generate more telemetry.</div>';
     } else {
-      var totalPrice = 0;
+      let totalPrice = 0;
       cartItems.forEach(function (item, index) {
         totalPrice += item.price;
         cartHtml +=
@@ -239,7 +145,7 @@
   }
 
   window.__triggerError = function () {
-    var brokenObject = null;
+    let brokenObject = null;
     brokenObject.thisWillThrow();
   };
 
@@ -255,16 +161,16 @@
       loadComplete: 600 + Math.floor(Math.random() * 2000),
       transferSize: 50000 + Math.floor(Math.random() * 200000),
     });
-    alert("Simulated a slow page load event. Check the Candidate 1 dashboard.");
+    alert("Simulated a slow page load event. Check the Prototype 3 dashboard.");
   };
 
   window.__triggerCustomEvent = function () {
     watchTower.trackEvent("test-suite-signal", {
       suite: "checkout-smoke",
       status: "warning",
-      scenario: "candidate_1_demo",
+      scenario: "shopdemo",
     });
-    alert("Custom event sent to Candidate 1.");
+    alert("Custom event sent to Prototype 3.");
   };
 
   window.__triggerFeedback = function () {
@@ -273,11 +179,11 @@
       message: "Checkout feels slow after the latest deploy.",
       category: "ux",
     });
-    alert("Feedback event sent to Candidate 1.");
+    alert("Feedback event sent to Prototype 3.");
   };
 
   window.__addToCart = function (productId) {
-    var selectedProduct = PRODUCTS.find(function (product) { return product.id === productId; });
+    let selectedProduct = PRODUCTS.find(function (product) { return product.id === productId; });
     if (!selectedProduct) return;
     cartItems.push(selectedProduct);
     watchTower.trackEvent("add-to-cart", {
@@ -289,7 +195,7 @@
   };
 
   window.__removeFromCart = function (itemIndex) {
-    var removedItem = cartItems[itemIndex];
+    let removedItem = cartItems[itemIndex];
     cartItems.splice(itemIndex, 1);
     watchTower.trackEvent("remove-from-cart", { productName: removedItem.name });
     renderCart();
@@ -307,18 +213,18 @@
 
   window.__checkoutError = function () {
     try {
-      var paymentGateway = undefined;
+      let paymentGateway = undefined;
       paymentGateway.processPayment(cartItems);
     } catch (error) {
       watchTower.trackError(error);
-      alert("Checkout failed. Error sent to Candidate 1.");
+      alert("Checkout failed. Error sent to Prototype 3.");
       renderCart();
     }
   };
 
   window.__login = function () {
-    var usernameInput = document.getElementById("username");
-    var username = usernameInput.value.trim();
+    let usernameInput = document.getElementById("username");
+    let username = usernameInput.value.trim();
     if (!username) {
       alert("Please enter a username");
       return;
